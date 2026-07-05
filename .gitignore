@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.env.*
+uploads/
+
+project-backup-20260629-183621.zip
