@@ -11,11 +11,12 @@ import { logInfo } from "./utils/logger.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const uploadDir = path.resolve(__dirname, "..", "uploads");
-const distDir = path.join(__dirname, "../dist");
-const indexHtml = path.join(distDir, "index.html");
+const distPath = path.join(__dirname, "../dist");
+const indexHtml = path.join(distPath, "index.html");
 
 validateEnv();
 
+app.use(express.static(distPath));
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 app.use(requestLogger);
@@ -23,9 +24,21 @@ app.use("/uploads", express.static(uploadDir));
 app.use("/handles", express.static(path.resolve(__dirname, "..", "public", "handles")));
 app.use("/api", apiRoutes(uploadDir));
 app.use("/api", notFoundHandler);
-app.use(express.static(distDir));
+
 app.get("/{*splat}", (_req, res) => {
-  res.sendFile(indexHtml);
+  res.sendFile(indexHtml, (error) => {
+    if (!error) {
+      return;
+    }
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: true,
+        message: "Frontend build not found.",
+        details: "Run npm run build before starting the server so dist/index.html exists."
+      });
+    }
+  });
 });
 app.use(errorHandler);
 
