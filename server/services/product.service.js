@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, "..", "data");
+const publicDir = path.resolve(__dirname, "..", "..", "public");
 const catalogPath = path.join(dataDir, "catalog.json");
 const handlesPath = path.join(dataDir, "handles.json");
 const productsPath = path.join(dataDir, "products.json");
@@ -41,7 +42,61 @@ function getProductId(product) {
   return String(product.id || product.filename || "");
 }
 
+function isSmartHandleProduct(product) {
+  return product?.isSmartHandle === true;
+}
+
+function getVariantSide(variant = {}) {
+  return normalize(variant.side || variant.orientation || variant.handle_side);
+}
+
+function getVariantPosition(variant = {}) {
+  return normalize(variant.position || variant.face || variant.door_face);
+}
+
+function isRightExteriorVariant(variant = {}) {
+  return getVariantSide(variant) === "right" || getVariantPosition(variant) === "exterior";
+}
+
+function variantImageUrl(variant) {
+  if (!variant) return null;
+  return (
+    variant.imageUrl ||
+    variant.image_url ||
+    variant.asset_url ||
+    variant.assetUrl ||
+    variant.url ||
+    null
+  );
+}
+
+function explicitRightExteriorAsset(product) {
+  const directAsset =
+    product.rightImageUrl ||
+    product.right_image_url ||
+    product.exteriorImageUrl ||
+    product.exterior_image_url ||
+    product.right_asset_url ||
+    product.exterior_asset_url ||
+    product.asset_url_right ||
+    product.asset_url_exterior ||
+    product.assets?.right ||
+    product.assets?.exterior ||
+    product.images?.right ||
+    product.images?.exterior ||
+    null;
+  if (directAsset) return directAsset;
+
+  const rightVariant = Array.isArray(product.variants)
+    ? product.variants.find(isRightExteriorVariant)
+    : null;
+  return variantImageUrl(rightVariant);
+}
+
 function productImageUrl(product) {
+  const rightExteriorAsset = isSmartHandleProduct(product) ? explicitRightExteriorAsset(product) : null;
+  if (rightExteriorAsset) return productImageUrl({ ...product, imageUrl: rightExteriorAsset, isSmartHandle: false });
+
   if (product.imageUrl) return product.imageUrl;
   const assetUrl = String(product.asset_url || "");
   const legacyAssetMatch = assetUrl.match(/\/assets\/handles\/handle-(\d+)\.(png|jpe?g|webp)$/i);
@@ -49,7 +104,17 @@ function productImageUrl(product) {
   if (product.asset_url) return product.asset_url;
   if (product.filename) return `/handles/${product.filename}`;
   if (Number.isInteger(Number(product.id))) return `/handles/${product.id}.png`;
-  return "/handles/1.png";
+  return null;
+}
+
+function hasExistingLocalAsset(imageUrl) {
+  if (!imageUrl) return false;
+  if (/^https?:\/\//i.test(imageUrl) || imageUrl.startsWith("data:")) return true;
+  if (!imageUrl.startsWith("/handles/")) return false;
+
+  const assetPath = path.resolve(publicDir, imageUrl.slice(1));
+  if (!assetPath.startsWith(publicDir + path.sep)) return false;
+  return fs.existsSync(assetPath) && fs.statSync(assetPath).isFile();
 }
 
 function normalizeProduct(product) {
@@ -58,21 +123,48 @@ function normalizeProduct(product) {
   const color = product.color || product.finish || "chrome";
   const material = product.material || "steel";
   const compatibility = product.compatibility || "wood";
+  const isSmartHandle = isSmartHandleProduct(product);
+  const rightExteriorAsset = isSmartHandle ? explicitRightExteriorAsset(product) : null;
 
   return {
     ...product,
     id,
     imageUrl: productImageUrl(product),
+    asset_url: rightExteriorAsset || product.asset_url,
     style,
     color,
     material,
     compatibility,
     finish: product.finish || color,
+    isSmartHandle,
+    side: isSmartHandle ? "right" : product.side,
+    position: isSmartHandle ? "exterior" : product.position,
     name: product.name || `Handle ${id}`,
     description:
       product.description ||
       `${style} ${color} ${material} handle compatible with ${compatibility} doors.`
   };
+}
+
+export function resolveSmartHandleProduct(product) {
+  if (!product || !isSmartHandleProduct(product)) return product || null;
+
+  const rightExteriorAsset = explicitRightExteriorAsset(product);
+  const resolved = {
+    ...product,
+    isSmartHandle: true,
+    side: "right",
+    position: "exterior"
+  };
+
+  if (rightExteriorAsset) {
+    resolved.imageUrl = productImageUrl({ ...product, imageUrl: rightExteriorAsset, isSmartHandle: false });
+    resolved.asset_url = rightExteriorAsset;
+  } else {
+    resolved.imageUrl = productImageUrl(resolved);
+  }
+
+  return resolved;
 }
 
 function scoreProduct(metadata, product) {
@@ -97,7 +189,7 @@ function scoreProduct(metadata, product) {
 }
 
 export function listProducts() {
-  return loadActiveProducts().map(normalizeProduct);
+  return loadActiveProducts().map(normalizeProduct).filter((product) => hasExistingLocalAsset(product.imageUrl));
 }
 
 export function getProductById(id) {

@@ -1,4 +1,4 @@
-import { getProductById, jsonResponse, matchProduct } from "./_shared.js";
+import { getProductById, jsonResponse, matchProduct, resolveSmartHandleProduct } from "./_shared.js";
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_VISION_MODEL = "openai/gpt-4o";
@@ -258,13 +258,41 @@ export async function generateReplacement({ request, env }) {
   const handleMaterial = String(image.formData.get("handle_material") || "").trim();
   const handleProduct = String(image.formData.get("handle_product") || "").trim();
   const selectedHandleInput = parseOptionalJsonField(image.formData.get("selected_handle"), "selected_handle");
-  const selectedHandle =
-    selectedHandleInput?.id && getProductById(selectedHandleInput.id)
-      ? { ...getProductById(selectedHandleInput.id), client_selected_handle: selectedHandleInput }
-      : selectedHandleInput;
+  const catalogHandle = selectedHandleInput?.id ? getProductById(selectedHandleInput.id) : null;
+  const selectedHandle = resolveSmartHandleProduct(
+    catalogHandle ? { ...catalogHandle, client_selected_handle: selectedHandleInput } : null
+  );
 
   if (!handleStyle) {
     throw new HttpError("handle_style is required.", 400, "Send handle_style as a multipart form field.");
+  }
+
+  if (!selectedHandleInput?.id) {
+    throw new HttpError(
+      "selected_handle.id is required.",
+      400,
+      "Select a handle before generating the preview."
+    );
+  }
+
+  if (!selectedHandle?.id || !selectedHandle?.imageUrl) {
+    throw new HttpError(
+      "Selected handle could not be resolved.",
+      400,
+      `Handle ${selectedHandleInput.id} is not available in the live catalog.`
+    );
+  }
+
+  if (selectedHandle?.isSmartHandle) {
+    console.log(JSON.stringify({
+      level: "info",
+      message: "smart_handle.resolved_side",
+      id: selectedHandle.id,
+      side: selectedHandle.side,
+      position: selectedHandle.position,
+      imageUrl: selectedHandle.imageUrl,
+      asset_url: selectedHandle.asset_url
+    }));
   }
 
   const prompt = buildHandleReplacementPrompt({
@@ -276,6 +304,7 @@ export async function generateReplacement({ request, env }) {
     handleProduct,
     selectedHandle
   });
+  console.log(`Processing handle: ${selectedHandle.name || selectedHandle.id}`);
   const result = await callImageGeneration(env, image.dataUrl, prompt, getHandleReferenceUrl(request, selectedHandle));
   const imageUrl = extractGeneratedImage(result);
 
@@ -300,12 +329,25 @@ export async function generateReplacement({ request, env }) {
 export async function processTryOn({ request, env }) {
   const image = await getUploadedImage(request);
   const handleMetadata = validateBoundingBox(parseJsonField(image.formData.get("handle_metadata"), "handle_metadata"));
-  const product = parseJsonField(image.formData.get("product"), "product");
+  const product = resolveSmartHandleProduct(parseJsonField(image.formData.get("product"), "product"));
 
   if (!product?.id) {
     throw new HttpError("product.id is required.", 400, "Send product as a JSON form field.");
   }
 
+  if (product?.isSmartHandle) {
+    console.log(JSON.stringify({
+      level: "info",
+      message: "smart_handle.resolved_side",
+      id: product.id,
+      side: product.side,
+      position: product.position,
+      imageUrl: product.imageUrl,
+      asset_url: product.asset_url
+    }));
+  }
+
+  console.log(`Processing handle: ${product.name || product.id}`);
   const prompt = buildZeroModificationPrompt({ handleMetadata, product });
   const result = await callImageGeneration(
     env,
@@ -498,6 +540,7 @@ function normalizeAnalysis(metadata = {}) {
 }
 
 function normalizeHandleAssetUrl(selectedHandle) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
   const imageUrl = selectedHandle?.imageUrl || selectedHandle?.asset_url;
   if (!imageUrl || typeof imageUrl !== "string") return null;
   if (imageUrl.startsWith("http") || imageUrl.startsWith("data:")) return imageUrl;
@@ -512,6 +555,7 @@ function normalizeHandleAssetUrl(selectedHandle) {
 }
 
 function getHandleReferenceUrl(request, selectedHandle) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
   const assetUrl = normalizeHandleAssetUrl(selectedHandle);
   if (!assetUrl || assetUrl.startsWith("data:")) return null;
   if (assetUrl.startsWith("http")) return assetUrl;
@@ -540,7 +584,11 @@ function getDoorContextForPrompt(doorContext = {}) {
 }
 
 function buildZeroModificationPrompt({ handleMetadata, product }) {
+  product = resolveSmartHandleProduct(product);
   const coords = JSON.stringify(handleMetadata.handle_coords);
+  const smartHandleOrientation = product?.isSmartHandle
+    ? `Side: ${product.side}\nPosition: ${product.position}\nSmart Handle: true\n`
+    : "";
 
   return {
     system: `You are an architectural preservation engine.
@@ -562,7 +610,7 @@ Product ID: ${product.id}
 Product Name: ${product.name}
 Style: ${product.style}
 Finish: ${product.finish}
-Description: ${product.description}
+${smartHandleOrientation}Description: ${product.description}
 Asset Reference: ${product.asset_url || product.imageUrl || ""}
 
 Detected metadata:
@@ -581,16 +629,34 @@ function buildHandleReplacementPrompt({
   handleProduct,
   selectedHandle
 }) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
+  if (!selectedHandle?.id || !selectedHandle?.imageUrl) {
+    throw new HttpError(
+      "Selected handle is required for generation.",
+      400,
+      "Choose a handle from the live catalog before generating the preview."
+    );
+  }
+
   const coords = JSON.stringify(handleMetadata.handle_coords);
   const door = getDoorContextForPrompt(doorContext);
-  const handle_style = selectedHandle?.style || handleStyle || "modern metal door handle";
-  const handle_material = selectedHandle?.material || handleMaterial || handleMetadata.material || "metal";
-  const product = selectedHandle?.name || handleProduct || "a realistic replacement door handle";
-  const handle_finish = selectedHandle?.finish || "match the selected product finish";
-  const description = selectedHandle?.description || "Use the selected replacement handle.";
-  const productId = selectedHandle?.id || "fallback-selected-handle";
+  const handle_style = selectedHandle.style;
+  const handle_material = selectedHandle.material;
+  const product = selectedHandle.name;
+  const handle_finish = selectedHandle.finish;
+  const description = selectedHandle.description;
+  const productId = selectedHandle.id;
   const assetReference = normalizeHandleAssetUrl(selectedHandle) || "no asset selected";
   const publicAssetReference = getHandleReferenceUrl(request, selectedHandle) || "no public asset URL available";
+  const smartHandleInstructions = selectedHandle?.isSmartHandle
+    ? `
+SMART HANDLE ORIENTATION:
+- This selected product is a smart handle.
+- Always use ONLY the right-side exterior handle variant.
+- Final resolved handle side: ${selectedHandle.side}
+- Final resolved handle position: ${selectedHandle.position}
+- Never use a left-side, interior, mirrored, or first-available smart-handle asset.`
+    : "";
 
   return {
     user: `You are an expert image editor. Look at the attached image of a door.
@@ -624,6 +690,9 @@ B) SELECTED HANDLE FROM USER SELECTION. Replace the existing handle with exactly
   * handle_finish: ${handle_finish}
   * handle_product_name: ${product}
   * handle_description: ${description}
+  * isSmartHandle: ${selectedHandle?.isSmartHandle ? "true" : "false"}
+  * resolved_handle_side: ${selectedHandle?.side || "unspecified"}
+  * resolved_handle_position: ${selectedHandle?.position || "unspecified"}${smartHandleInstructions}
 - Never swap the selected handle for a different design. Never improvise another handle style.
 - The new handle must match the perspective, lighting, and shadow of the door perfectly.
 - Output ONLY the modified image.`

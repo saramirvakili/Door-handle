@@ -4,8 +4,6 @@ import { ReactCompareSlider, ReactCompareSliderImage } from "react-compare-slide
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
-const FALLBACK_SUGGESTION_IMAGE = "/handles/1.png";
-
 function stableSuggestionId(suggestion) {
   const explicitId = suggestion?.id;
   if (explicitId !== undefined && explicitId !== null) return String(explicitId).trim();
@@ -22,15 +20,19 @@ function withCacheBuster(url, cacheKey) {
 
 function normalizeSuggestion(suggestion) {
   const id = stableSuggestionId(suggestion);
-  const imageUrl = suggestion?.imageUrl || (id ? `/handles/${id}.png` : FALLBACK_SUGGESTION_IMAGE);
+  const imageUrl = suggestion?.imageUrl || "";
+  const isSmartHandle = suggestion?.isSmartHandle === true;
   if (id && imageUrl) {
-    console.log("[suggestion:candidate]", { id, imageUrl });
+    console.log("[suggestion:candidate]", { id, imageUrl, side: isSmartHandle ? "right" : suggestion?.side });
   }
 
   return {
     ...suggestion,
     id,
-    imageUrl
+    imageUrl,
+    isSmartHandle,
+    side: isSmartHandle ? "right" : suggestion?.side,
+    position: isSmartHandle ? "exterior" : suggestion?.position
   };
 }
 
@@ -55,7 +57,7 @@ function absoluteUrl(url) {
 }
 
 function publicAssetUrl(url) {
-  if (!url) return FALLBACK_SUGGESTION_IMAGE;
+  if (!url) return "";
   if (url.startsWith("http") || url.startsWith("data:") || url.startsWith("/")) return url;
   return `/${url}`;
 }
@@ -146,6 +148,9 @@ function App() {
 
   async function generate(analysisPayload = analysis) {
     if (!file || !analysisPayload) return;
+    if (!selectedSuggestion?.id || !selectedSuggestion?.imageUrl) {
+      throw new Error("Select an available handle before generating the preview.");
+    }
     setStatus("generating");
     setError("");
 
@@ -161,13 +166,15 @@ function App() {
     body.append("handle_product", selectedSuggestion?.name || "دستگیره پیشنهادی");
 
     if (selectedSuggestion) {
-      body.append("selected_handle", JSON.stringify(selectedSuggestion));
+      body.append("selected_handle", JSON.stringify(normalizeSuggestion(selectedSuggestion)));
     }
 
     console.log("[generate:request]", {
       selectedHandleId: selectedSuggestion?.id || null,
       selectedHandleImageUrl: selectedSuggestion?.imageUrl || null,
       selectedHandleAssetUrl: selectedSuggestion?.asset_url || null,
+      selectedHandleSide: selectedSuggestion?.side || null,
+      selectedHandlePosition: selectedSuggestion?.position || null,
       selectedHandle: selectedSuggestion || null,
       handleCoords: analysisPayload.handle_metadata?.handle_coords || null
     });
@@ -199,8 +206,7 @@ function App() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "تحلیل تصویر ناموفق بود.");
     setAnalysis(payload);
-
-    await generate(payload);
+    setStatus("analyzed");
   }
 
   async function loadSuggestions() {
@@ -217,7 +223,7 @@ function App() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.message || "دریافت پیشنهادها ناموفق بود.");
       const normalizedSuggestions = Array.isArray(payload.suggestions)
-        ? payload.suggestions.map(normalizeSuggestion).filter((suggestion) => suggestion.id)
+        ? payload.suggestions.map(normalizeSuggestion).filter((suggestion) => suggestion.id && suggestion.imageUrl)
         : [];
       console.log("[suggestions:loaded]", normalizedSuggestions.map(({ id, imageUrl }) => ({ id, imageUrl })));
       setSuggestions(normalizedSuggestions);
@@ -242,9 +248,7 @@ function App() {
   }
 
   function handleSuggestionImageError(event) {
-    if (event.currentTarget.dataset.fallbackApplied) return;
-    event.currentTarget.dataset.fallbackApplied = "true";
-    event.currentTarget.src = FALLBACK_SUGGESTION_IMAGE;
+    event.currentTarget.closest(".suggestion-card")?.setAttribute("hidden", "true");
   }
 
   return (
@@ -318,7 +322,10 @@ function App() {
                       onClick={() => {
                         console.log("[suggestion:selected]", {
                           id: suggestion.id,
-                          imageUrl: suggestion.imageUrl
+                          imageUrl: suggestion.imageUrl,
+                          side: suggestion.side,
+                          position: suggestion.position,
+                          isSmartHandle: suggestion.isSmartHandle
                         });
                         setSelectedSuggestionId(suggestion.id);
                         setProcessed(null);
@@ -351,7 +358,7 @@ function App() {
               {status === "analyzing" ? "در حال تحلیل..." : "تحلیل تصویر"}
             </button>
             <button
-              disabled={!analysis || status === "generating"}
+              disabled={!analysis || !selectedSuggestion || status === "generating"}
               className="primary"
               onClick={() => run(() => generate())}
             >

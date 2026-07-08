@@ -54,7 +54,61 @@ function normalizeCatalogId(value) {
   return withoutLeadingZeros || cleaned;
 }
 
+function isSmartHandleProduct(product) {
+  return product?.isSmartHandle === true;
+}
+
+function getVariantSide(variant = {}) {
+  return normalize(variant.side || variant.orientation || variant.handle_side);
+}
+
+function getVariantPosition(variant = {}) {
+  return normalize(variant.position || variant.face || variant.door_face);
+}
+
+function isRightExteriorVariant(variant = {}) {
+  return getVariantSide(variant) === "right" || getVariantPosition(variant) === "exterior";
+}
+
+function variantImageUrl(variant) {
+  if (!variant) return null;
+  return (
+    variant.imageUrl ||
+    variant.image_url ||
+    variant.asset_url ||
+    variant.assetUrl ||
+    variant.url ||
+    null
+  );
+}
+
+function explicitRightExteriorAsset(product) {
+  const directAsset =
+    product.rightImageUrl ||
+    product.right_image_url ||
+    product.exteriorImageUrl ||
+    product.exterior_image_url ||
+    product.right_asset_url ||
+    product.exterior_asset_url ||
+    product.asset_url_right ||
+    product.asset_url_exterior ||
+    product.assets?.right ||
+    product.assets?.exterior ||
+    product.images?.right ||
+    product.images?.exterior ||
+    null;
+  if (directAsset) return directAsset;
+
+  const rightVariant = Array.isArray(product.variants)
+    ? product.variants.find(isRightExteriorVariant)
+    : null;
+  return variantImageUrl(rightVariant);
+}
+
 function productImageUrl(product) {
+  const rightExteriorAsset = isSmartHandleProduct(product) ? explicitRightExteriorAsset(product) : null;
+  if (rightExteriorAsset) return productImageUrl({ ...product, imageUrl: rightExteriorAsset, isSmartHandle: false });
+
   if (product.imageUrl) return product.imageUrl;
 
   const assetUrl = String(product.asset_url || "");
@@ -66,7 +120,7 @@ function productImageUrl(product) {
   if (product.asset_url) return product.asset_url;
   if (product.filename) return `/handles/${product.filename}`;
   if (Number.isInteger(Number(product.id))) return `/handles/${product.id}.png`;
-  return "/handles/1.png";
+  return null;
 }
 
 function normalizeProduct(product) {
@@ -74,21 +128,48 @@ function normalizeProduct(product) {
   const color = product.color || product.finish || "chrome";
   const material = product.material || "steel";
   const compatibility = product.compatibility || "wood";
+  const isSmartHandle = isSmartHandleProduct(product);
+  const rightExteriorAsset = isSmartHandle ? explicitRightExteriorAsset(product) : null;
 
   return {
     ...product,
     id: product.id,
     imageUrl: productImageUrl(product),
+    asset_url: rightExteriorAsset || product.asset_url,
     style,
     color,
     material,
     compatibility,
     finish: product.finish || color,
+    isSmartHandle,
+    side: isSmartHandle ? "right" : product.side,
+    position: isSmartHandle ? "exterior" : product.position,
     name: product.name || `Handle ${product.id}`,
     description:
       product.description ||
       `${style} ${color} ${material} handle compatible with ${compatibility} doors.`
   };
+}
+
+export function resolveSmartHandleProduct(product) {
+  if (!product || !isSmartHandleProduct(product)) return product || null;
+
+  const rightExteriorAsset = explicitRightExteriorAsset(product);
+  const resolved = {
+    ...product,
+    isSmartHandle: true,
+    side: "right",
+    position: "exterior"
+  };
+
+  if (rightExteriorAsset) {
+    resolved.imageUrl = productImageUrl({ ...product, imageUrl: rightExteriorAsset, isSmartHandle: false });
+    resolved.asset_url = rightExteriorAsset;
+  } else {
+    resolved.imageUrl = productImageUrl(resolved);
+  }
+
+  return resolved;
 }
 
 function scoreProduct(metadata, product) {
@@ -113,7 +194,7 @@ function scoreProduct(metadata, product) {
 }
 
 export function listProducts() {
-  return activeCatalog().map(normalizeProduct);
+  return activeCatalog().map(normalizeProduct).filter((product) => product.imageUrl);
 }
 
 export function getProductById(id) {

@@ -40,6 +40,7 @@ function normalizeCatalogItem(item) {
   const material = assertAllowed("material", item.material, id);
   const compatibility = assertAllowed("compatibility", item.compatibility, id);
   const filename = item.filename || `${id}.png`;
+  const isSmartHandle = item.isSmartHandle === true;
 
   return {
     id,
@@ -49,6 +50,9 @@ function normalizeCatalogItem(item) {
     color,
     material,
     compatibility,
+    isSmartHandle,
+    side: isSmartHandle ? "right" : item.side,
+    position: isSmartHandle ? "exterior" : item.position,
     name: `Handle ${id}`,
     finish: color,
     description: `${style} ${color} ${material} handle compatible with ${compatibility} doors.`

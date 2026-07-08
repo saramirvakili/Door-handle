@@ -4,10 +4,6 @@ import { getProductById, listProducts } from "./product.service.js";
 
 const HANDLE_SUGGESTION_MODEL = "openai/gpt-4o";
 
-function getFallbackImageUrl(index, catalog) {
-  return catalog[index % catalog.length]?.imageUrl || "/handles/1.png";
-}
-
 function parseSuggestionContent(result) {
   const content = result?.choices?.[0]?.message?.content;
   if (!content) return null;
@@ -27,38 +23,36 @@ function normalizeCatalogId(value) {
   return withoutLeadingZeros || cleaned;
 }
 
-function resolveCatalogHandle(suggestion, catalog, index) {
+function resolveCatalogHandle(suggestion) {
   const suggestedId = normalizeCatalogId(suggestion?.id);
   const byId = suggestedId ? getProductById(suggestedId) : null;
   if (byId) return byId;
 
-  const suggestedImageUrl = String(suggestion?.imageUrl || "");
-  const byImage = suggestedImageUrl
-    ? catalog.find((handle) => handle.imageUrl === suggestedImageUrl)
-    : null;
-  if (byImage) return byImage;
-
   logWarn("suggestions.unresolved_catalog_handle", {
     suggestedId: suggestion?.id,
-    suggestedImageUrl,
-    fallbackIndex: index
+    suggestedImageUrl: suggestion?.imageUrl
   });
 
-  return catalog[index % catalog.length] || null;
+  return null;
 }
 
 function normalizeSuggestion(suggestion, index, catalog) {
-  const handle = resolveCatalogHandle(suggestion, catalog, index);
+  const handle = resolveCatalogHandle(suggestion);
+  if (!handle?.id || !handle?.imageUrl) return null;
+
   const resolved = {
     ...handle,
-    id: String(handle?.id || suggestion?.id || `handle_${index + 1}`),
-    imageUrl: String(handle?.imageUrl || getFallbackImageUrl(index, catalog)),
-    name: String(suggestion?.name || handle?.name || `Handle ${handle?.id || index + 1}`),
+    id: String(handle.id),
+    imageUrl: String(handle.imageUrl),
+    name: String(handle.name || `Handle ${handle.id}`),
     style: String(handle?.style || suggestion?.style || "modern"),
     color: String(handle?.color || suggestion?.color || handle?.finish || "chrome"),
     material: String(handle?.material || suggestion?.material || "steel"),
     compatibility: String(handle?.compatibility || suggestion?.compatibility || "wood"),
     finish: String(handle?.finish || handle?.color || suggestion?.finish || "chrome"),
+    isSmartHandle: handle?.isSmartHandle === true,
+    side: handle?.isSmartHandle ? "right" : handle?.side,
+    position: handle?.isSmartHandle ? "exterior" : handle?.position,
     description: String(
       suggestion?.description ||
         handle?.description ||
@@ -73,7 +67,10 @@ function normalizeSuggestion(suggestion, index, catalog) {
     imageUrl: resolved.imageUrl,
     style: resolved.style,
     color: resolved.color,
-    material: resolved.material
+    material: resolved.material,
+    side: resolved.side,
+    position: resolved.position,
+    isSmartHandle: resolved.isSmartHandle
   });
 
   return resolved;
@@ -81,7 +78,10 @@ function normalizeSuggestion(suggestion, index, catalog) {
 
 function normalizeSuggestions(value, catalog) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 5).map((suggestion, index) => normalizeSuggestion(suggestion, index, catalog));
+  return value
+    .slice(0, 5)
+    .map((suggestion, index) => normalizeSuggestion(suggestion, index, catalog))
+    .filter(Boolean);
 }
 
 export async function suggestHandles(detectionResult) {
@@ -95,6 +95,9 @@ export async function suggestHandles(detectionResult) {
     material: handle.material,
     compatibility: handle.compatibility,
     finish: handle.finish,
+    isSmartHandle: handle.isSmartHandle,
+    side: handle.side,
+    position: handle.position,
     description: handle.description
   }));
   const door = detectionResult?.door || {};

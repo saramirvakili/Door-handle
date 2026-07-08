@@ -6,6 +6,7 @@ import { IMAGE_GENERATION_MODEL, VISION_MODEL } from "../config/model.js";
 import { AppError } from "../utils/app-error.js";
 import { logInfo } from "../utils/logger.js";
 import { createOpenRouterClient } from "./openrouter.service.js";
+import { resolveSmartHandleProduct } from "./product.service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "..", "public");
@@ -19,6 +20,7 @@ function getMimeTypeFromPath(filePath) {
 }
 
 function normalizeHandleAssetUrl(selectedHandle) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
   const imageUrl = selectedHandle?.imageUrl || selectedHandle?.asset_url;
   if (!imageUrl || typeof imageUrl !== "string") return null;
   if (imageUrl.startsWith("http") || imageUrl.startsWith("data:")) return imageUrl;
@@ -33,6 +35,7 @@ function normalizeHandleAssetUrl(selectedHandle) {
 }
 
 function publicHandleAssetUrl(selectedHandle) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
   const assetUrl = normalizeHandleAssetUrl(selectedHandle);
   if (!assetUrl || assetUrl.startsWith("http") || assetUrl.startsWith("data:")) return assetUrl;
   const apiBaseUrl = process.env.PUBLIC_API_URL || `http://localhost:${env.port}`;
@@ -40,6 +43,7 @@ function publicHandleAssetUrl(selectedHandle) {
 }
 
 async function getSelectedHandleReferenceImage(selectedHandle) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
   const imageUrl = normalizeHandleAssetUrl(selectedHandle);
   if (!imageUrl || typeof imageUrl !== "string" || !imageUrl.startsWith("/handles/")) {
     return null;
@@ -84,7 +88,11 @@ function getDoorContextForPrompt(doorContext = {}) {
 }
 
 export function buildZeroModificationPrompt({ handleMetadata, product }) {
+  product = resolveSmartHandleProduct(product);
   const coords = JSON.stringify(handleMetadata.handle_coords);
+  const smartHandleOrientation = product?.isSmartHandle
+    ? `Side: ${product.side}\nPosition: ${product.position}\nSmart Handle: true\n`
+    : "";
 
   return {
     system: `You are an architectural preservation engine.
@@ -106,7 +114,7 @@ Product ID: ${product.id}
 Product Name: ${product.name}
 Style: ${product.style}
 Finish: ${product.finish}
-Description: ${product.description}
+${smartHandleOrientation}Description: ${product.description}
 Asset Reference: ${product.asset_url}
 
 Detected metadata:
@@ -238,17 +246,34 @@ export function buildHandleReplacementPrompt({
   handleProduct,
   selectedHandle
 }) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
+  if (!selectedHandle?.id || !selectedHandle?.imageUrl) {
+    throw new AppError(
+      "Selected handle is required for generation.",
+      400,
+      "Choose a handle from the live catalog before generating the preview."
+    );
+  }
+
   const coords = JSON.stringify(handleMetadata.handle_coords);
   const door = getDoorContextForPrompt(doorContext);
-  const handle_style = selectedHandle?.style || handleStyle || "modern metal door handle";
-  const handle_material =
-    selectedHandle?.material || handleMaterial || handleMetadata.material || "metal";
-  const product = selectedHandle?.name || handleProduct || "a realistic replacement door handle";
-  const handle_finish = selectedHandle?.finish || "match the selected product finish";
-  const description = selectedHandle?.description || "Use the selected replacement handle.";
-  const productId = selectedHandle?.id || "fallback-selected-handle";
+  const handle_style = selectedHandle.style;
+  const handle_material = selectedHandle.material;
+  const product = selectedHandle.name;
+  const handle_finish = selectedHandle.finish;
+  const description = selectedHandle.description;
+  const productId = selectedHandle.id;
   const assetReference = normalizeHandleAssetUrl(selectedHandle) || "no asset selected";
   const publicAssetReference = publicHandleAssetUrl(selectedHandle) || "no public asset URL available";
+  const smartHandleInstructions = selectedHandle?.isSmartHandle
+    ? `
+SMART HANDLE ORIENTATION:
+- This selected product is a smart handle.
+- Always use ONLY the right-side exterior handle variant.
+- Final resolved handle side: ${selectedHandle.side}
+- Final resolved handle position: ${selectedHandle.position}
+- Never use a left-side, interior, mirrored, or first-available smart-handle asset.`
+    : "";
 
   return {
     user: `You are an expert image editor. Look at the attached image of a door.
@@ -282,6 +307,9 @@ B) SELECTED HANDLE FROM USER SELECTION. Replace the existing handle with exactly
   * handle_finish: ${handle_finish}
   * handle_product_name: ${product}
   * handle_description: ${description}
+  * isSmartHandle: ${selectedHandle?.isSmartHandle ? "true" : "false"}
+  * resolved_handle_side: ${selectedHandle?.side || "unspecified"}
+  * resolved_handle_position: ${selectedHandle?.position || "unspecified"}${smartHandleInstructions}
 - Never swap the selected handle for a different design. Never improvise another handle style.
 - The new handle must match the perspective, lighting, and shadow of the door perfectly.
 - Output ONLY the modified image.`
@@ -289,6 +317,17 @@ B) SELECTED HANDLE FROM USER SELECTION. Replace the existing handle with exactly
 }
 
 export async function generateHandleTryOn({ image, handleMetadata, product }) {
+  product = resolveSmartHandleProduct(product);
+  if (product?.isSmartHandle) {
+    logInfo("smart_handle.resolved_side", {
+      id: product.id,
+      side: product.side,
+      position: product.position,
+      imageUrl: product.imageUrl,
+      asset_url: product.asset_url
+    });
+  }
+  console.log(`Processing handle: ${product.name || product.id}`);
   const prompt = buildZeroModificationPrompt({ handleMetadata, product });
   const openRouter = createOpenRouterClient();
 
@@ -322,6 +361,16 @@ export async function generateReplacementImage({
   handleProduct,
   selectedHandle
 }) {
+  selectedHandle = resolveSmartHandleProduct(selectedHandle);
+  if (selectedHandle?.isSmartHandle) {
+    logInfo("smart_handle.resolved_side", {
+      id: selectedHandle.id,
+      side: selectedHandle.side,
+      position: selectedHandle.position,
+      imageUrl: selectedHandle.imageUrl,
+      asset_url: selectedHandle.asset_url
+    });
+  }
   const prompt = buildHandleReplacementPrompt({
     handleMetadata,
     doorContext,
@@ -356,6 +405,7 @@ export async function generateReplacementImage({
     prompt
   });
 
+  console.log(`Processing handle: ${selectedHandle.name || selectedHandle.id}`);
   const result = await openRouter.callImageGenerationModel(image.path, prompt, {
     mimeType: image.mimetype,
     referenceImages: selectedHandleReferenceImage ? [selectedHandleReferenceImage] : [],
