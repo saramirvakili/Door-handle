@@ -354,14 +354,14 @@ function getOpenRouterConfig(env = {}) {
     throw new HttpError(
       "OPENROUTER_API_KEY is missing.",
       500,
-      "Add OPENROUTER_API_KEY in Cloudflare Pages environment variables."
+      "Add OPENROUTER_API_KEY to the Render Web Service environment variables."
     );
   }
 
   return {
     apiKey: apiKey.trim(),
     baseUrl: String(env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL).replace(/\/+$/, ""),
-    publicAppUrl: env.PUBLIC_APP_URL || "https://smarthandle-pro.pages.dev"
+    publicAppUrl: env.PUBLIC_APP_URL || env.RENDER_EXTERNAL_URL || "http://localhost:3000"
   };
 }
 

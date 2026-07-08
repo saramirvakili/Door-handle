@@ -11,6 +11,8 @@ import { logInfo } from "./utils/logger.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const uploadDir = path.resolve(__dirname, "..", "uploads");
+const distDir = path.join(__dirname, "../dist");
+const indexHtml = path.join(distDir, "index.html");
 
 validateEnv();
 
@@ -20,7 +22,11 @@ app.use(requestLogger);
 app.use("/uploads", express.static(uploadDir));
 app.use("/handles", express.static(path.resolve(__dirname, "..", "public", "handles")));
 app.use("/api", apiRoutes(uploadDir));
-app.use(notFoundHandler);
+app.use("/api", notFoundHandler);
+app.use(express.static(distDir));
+app.get("/{*splat}", (_req, res) => {
+  res.sendFile(indexHtml);
+});
 app.use(errorHandler);
 
 app.listen(env.port, () => {
